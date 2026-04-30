@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQTT File Portal</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0a1628;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            background: #0d2744;
+            border: 1px solid #1a4a7a;
+            border-radius: 16px;
+            padding: 40px;
+            width: 500px;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: #90b7f8;
+        }
+
+        p.subtitle {
+            font-size: 14px;
+            color: #999;
+            margin-bottom: 32px;
+        }
+
+        label {
+            font-size: 13px;
+            color: #999;
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: #051e3e;
+            border: 1px solid #1a4a7a;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        .file-drop {
+            border: 2px dashed #1a4a7a;
+            border-radius: 8px;
+            padding: 32px;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .file-drop:hover { border-color: #90b7f8; }
+
+        .file-drop.dragover { border-color: #90b7f8; background: #0d2a4a; }
+
+        .file-drop p { color: #999; font-size: 14px; }
+
+        .file-drop .icon { font-size: 40px; margin-bottom: 8px; }
+
+        #selectedFileName {
+            font-size: 13px;
+            color: #90b7f8;
+            margin-top: 8px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #1a73e8;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+
+        button:hover { background: #1557b0; }
+        button:disabled { background: #333; cursor: not-allowed; }
+
+        .progress-wrap {
+            margin-top: 16px;
+            display: none;
+        }
+
+        progress {
+            width: 100%;
+            height: 6px;
+            border-radius: 4px;
+            appearance: none;
+        }
+
+        progress::-webkit-progress-bar { background: #051e3e; border-radius: 4px; }
+        progress::-webkit-progress-value { background: #90b7f8; border-radius: 4px; }
+
+        #statusMsg {
+            margin-top: 12px;
+            font-size: 14px;
+            text-align: center;
+            min-height: 20px;
+        }
+
+        .success { color: #4caf50; }
+        .error   { color: #f44336; }
+        .info    { color: #90b7f8; }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #1a4a7a;
+            margin: 24px 0;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <h1>MQTT File Portal</h1>
+    <p class="subtitle">Upload a file to cloud and notify Android devices via MQTT</p>
+
+    <hr class="divider"/>
+
+    <!-- Supabase Config -->
+    <label>Supabase URL</label>
+    <input type="text" id="supabaseUrl" placeholder="https://xxxx.supabase.co"/>
+
+    <label>Supabase Anon Key</label>
+    <input type="password" id="supabaseKey" placeholder="eyxxxxxxxxxxxx"/>
+
+    <label>Supabase Bucket</label>
+    <input type="text" id="supabaseBucket" value="mqtt-files"/>
+
+    <hr class="divider"/>
+
+    <!-- HiveMQ Config -->
+    <label>HiveMQ Host</label>
+    <input type="text" id="mqttHost" placeholder="xxxxxxxx.s1.eu.hivemq.cloud"/>
+
+    <label>HiveMQ Username</label>
+    <input type="text" id="mqttUsername" placeholder="havis"/>
+
+    <label>HiveMQ Password</label>
+    <input type="password" id="mqttPassword" placeholder="yourpassword"/>
+
+    <label>MQTT Topic</label>
+    <input type="text" id="mqttTopic" value="havis/mqtt/files"/>
+
+    <hr class="divider"/>
+
+    <!-- File Upload -->
+    <label>Select File</label>
+    <div class="file-drop" id="fileDrop">
+        <div class="icon">📁</div>
+        <p>Drag and drop a file here or click to browse</p>
+        <p id="selectedFileName"></p>
+        <input type="file" id="fileInput" style="display:none"/>
+    </div>
+
+    <button id="btnUpload" disabled>Upload &amp; Publish</button>
+
+    <!-- Progress -->
+    <div class="progress-wrap" id="progressWrap">
+        <progress id="progressBar" value="0" max="100"></progress>
+    </div>
+
+    <div id="statusMsg"></div>
+
+</div>
+
+<!-- MQTT over WebSocket using MQTT.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+
+<script>
+    let selectedFile = null;
+
+    // ── File picker ──────────────────────────────────────────────
+    const fileDrop     = document.getElementById('fileDrop');
+    const fileInput    = document.getElementById('fileInput');
+    const btnUpload    = document.getElementById('btnUpload');
+    const statusMsg    = document.getElementById('statusMsg');
+    const progressWrap = document.getElementById('progressWrap');
+    const progressBar  = document.getElementById('progressBar');
+
+    fileDrop.addEventListener('click', () => fileInput.click());
+
+    fileDrop.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        fileDrop.classList.add('dragover');
+    });
+
+    fileDrop.addEventListener('dragleave', () => {
+        fileDrop.classList.remove('dragover');
+    });
+
+    fileDrop.addEventListener('drop', (e) => {
+        e.preventDefault();
+        fileDrop.classList.remove('dragover');
+        const file = e.dataTransfer.files[0];
+        if (file) setFile(file);
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files[0]) setFile(fileInput.files[0]);
+    });
+
+    function setFile(file) {
+        selectedFile = file;
+        document.getElementById('selectedFileName').textContent = `Selected: ${file.name}`;
+        btnUpload.disabled = false;
+    }
+
+    // ── Upload & Publish ─────────────────────────────────────────
+    btnUpload.addEventListener('click', async () => {
+        if (!selectedFile) return;
+
+        const supabaseUrl    = document.getElementById('supabaseUrl').value.trim();
+        const supabaseKey    = document.getElementById('supabaseKey').value.trim();
+        const supabaseBucket = document.getElementById('supabaseBucket').value.trim();
+        const mqttHost       = document.getElementById('mqttHost').value.trim();
+        const mqttUsername   = document.getElementById('mqttUsername').value.trim();
+        const mqttPassword   = document.getElementById('mqttPassword').value.trim();
+        const mqttTopic      = document.getElementById('mqttTopic').value.trim();
+
+        if (!supabaseUrl || !supabaseKey || !mqttHost || !mqttTopic) {
+            setStatus('Please fill all fields', 'error');
+            return;
+        }
+
+        btnUpload.disabled = true;
+        progressWrap.style.display = 'block';
+        progressBar.value = 0;
+        setStatus('Uploading to Supabase...', 'info');
+
+        try {
+            // ── Step 1: Upload to Supabase ───────────────────────
+            const uploadUrl = `${supabaseUrl}/storage/v1/object/${supabaseBucket}/${selectedFile.name}`;
+            const response = await fetch(uploadUrl, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${supabaseKey}`,
+                'Content-Type': selectedFile.type || 'application/octet-stream',
+                'x-upsert': 'true'        // ← add this — overwrites if exists
+              },
+              body: selectedFile
+           });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(`Upload failed: ${response.status} — ${errorText}`);
+            }
+
+            progressBar.value = 80;
+            setStatus('Upload done. Publishing to MQTT...', 'info');
+
+            // ── Step 2: Build public download URL ────────────────
+            const downloadUrl = `${supabaseUrl}/storage/v1/object/public/${supabaseBucket}/${selectedFile.name}`;
+
+            // ── Step 3: Publish URL to HiveMQ via WebSocket ──────
+            await publishToMqtt(mqttHost, mqttUsername, mqttPassword, mqttTopic, downloadUrl);
+
+            progressBar.value = 100;
+            setStatus(`✓ Upload Successful! URL published to topic: ${mqttTopic}`, 'success');
+            btnUpload.disabled = false;
+
+        } catch (err) {
+            setStatus(`Error: ${err.message}`, 'error');
+            btnUpload.disabled = false;
+        }
+    });
+
+    // ── MQTT Publish via WebSocket ───────────────────────────────
+    function publishToMqtt(host, username, password, topic, message) {
+        return new Promise((resolve, reject) => {
+            const clientId = 'portal-' + Math.random().toString(16).substr(2, 8);
+            const client   = mqtt.connect(`wss://${host}:8884/mqtt`, {
+                clientId,
+                username,
+                password,
+                clean: true,
+                connectTimeout: 10000
+            });
+
+            client.on('connect', () => {
+                client.publish(topic, message, { qos: 1 }, (err) => {
+                    client.end();
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+
+            client.on('error', (err) => {
+                client.end();
+                reject(err);
+            });
+        });
+    }
+
+    function setStatus(msg, type) {
+        statusMsg.textContent = msg;
+        statusMsg.className   = type;
+    }
+</script>
+</body>
+</html>
