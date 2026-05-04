@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MQTT File Portal</title>
+    <title>MQTT Data Portal</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -44,7 +44,7 @@
             margin-bottom: 6px;
         }
 
-        input[type="text"], input[type="password"] {
+        input[type="text"] {
             width: 100%;
             padding: 12px 16px;
             background: #051e3e;
@@ -55,28 +55,15 @@
             margin-bottom: 16px;
         }
 
-        .file-drop {
-            border: 2px dashed #1a4a7a;
-            border-radius: 8px;
-            padding: 32px;
-            text-align: center;
-            cursor: pointer;
-            margin-bottom: 16px;
-            transition: border-color 0.2s;
+        .coord-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
         }
 
-        .file-drop:hover { border-color: #90b7f8; }
-
-        .file-drop.dragover { border-color: #90b7f8; background: #0d2a4a; }
-
-        .file-drop p { color: #999; font-size: 14px; }
-
-        .file-drop .icon { font-size: 40px; margin-bottom: 8px; }
-
-        #selectedFileName {
-            font-size: 13px;
-            color: #90b7f8;
-            margin-top: 8px;
+        .coord-row > div {
+            display: flex;
+            flex-direction: column;
         }
 
         button {
@@ -95,23 +82,8 @@
         button:hover { background: #1557b0; }
         button:disabled { background: #333; cursor: not-allowed; }
 
-        .progress-wrap {
-            margin-top: 16px;
-            display: none;
-        }
-
-        progress {
-            width: 100%;
-            height: 6px;
-            border-radius: 4px;
-            appearance: none;
-        }
-
-        progress::-webkit-progress-bar { background: #051e3e; border-radius: 4px; }
-        progress::-webkit-progress-value { background: #90b7f8; border-radius: 4px; }
-
         #statusMsg {
-            margin-top: 12px;
+            margin-top: 16px;
             font-size: 14px;
             text-align: center;
             min-height: 20px;
@@ -126,196 +98,182 @@
             border-top: 1px solid #1a4a7a;
             margin: 24px 0;
         }
+        .preview {
+            background: #051e3e;
+            border: 1px solid #1a4a7a;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 13px;
+            color: #90b7f8;
+            margin-bottom: 16px;
+            font-family: monospace;
+            min-height: 40px;
+            white-space: pre-wrap;     
+            word-break: break-all;     
+            overflow-wrap: break-word;  
+            max-height: 150px;         
+            overflow-y: auto;           
+    }
     </style>
 </head>
 <body>
 <div class="container">
 
-    <h1>MQTT File Portal</h1>
-    <p class="subtitle">Upload a file to cloud and notify Android devices via MQTT</p>
+    <h1>MQTT Data Portal</h1>
+    <p class="subtitle">Send location coordinates to Android devices via MQTT</p>
 
     <hr class="divider"/>
 
-    <!-- Supabase Config -->
-    <label>Supabase URL</label>
-    <input type="text" id="supabaseUrl" placeholder="https://xxxx.supabase.co"/>
-
-    <label>Supabase Anon Key</label>
-    <input type="password" id="supabaseKey" placeholder="eyxxxxxxxxxxxx"/>
-
-    <label>Supabase Bucket</label>
-    <input type="text" id="supabaseBucket" value="mqtt-files"/>
-
-    <hr class="divider"/>
-
-    <!-- HiveMQ Config -->
+    <!-- MQTT Config -->
     <label>HiveMQ Host</label>
     <input type="text" id="mqttHost" value="broker.hivemq.com"/>
-
-    <input type="text" id="mqttUsername" value="" style="display:none"/>
-    <input type="password" id="mqttPassword" value="" style="display:none"/>
 
     <label>MQTT Topic</label>
     <input type="text" id="mqttTopic" value="havis/mqtt/files"/>
 
     <hr class="divider"/>
 
-    <!-- File Upload -->
-    <label>Select File</label>
-    <div class="file-drop" id="fileDrop">
-        <div class="icon">📁</div>
-        <p>Drag and drop a file here or click to browse</p>
-        <p id="selectedFileName"></p>
-        <input type="file" id="fileInput" style="display:none"/>
+    <!-- Coordinates Input -->
+    <label>Location Coordinates</label>
+
+    <div class="coord-row">
+        <div>
+            <label>Latitude</label>
+            <input type="text" id="latitude" placeholder="e.g. 17.3850"/>
+        </div>
+        <div>
+            <label>Longitude</label>
+            <input type="text" id="longitude" placeholder="e.g. 78.4867"/>
+        </div>
     </div>
 
-    <button id="btnUpload" disabled>Upload &amp; Publish</button>
+    <label>Label (optional)</label>
+    <input type="text" id="label" placeholder="e.g. Vehicle Location"/>
 
-    <!-- Progress -->
-    <div class="progress-wrap" id="progressWrap">
-        <progress id="progressBar" value="0" max="100"></progress>
+    <!-- Payload Preview -->
+    <label>Payload Preview</label>
+    <div class="preview" id="payloadPreview">
+        Fill in coordinates to preview payload
     </div>
+
+    <button id="btnPublish">Publish via MQTT</button>
 
     <div id="statusMsg"></div>
 
 </div>
 
-<!-- MQTT over WebSocket using MQTT.js -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
 
 <script>
-    let selectedFile = null;
+    const latInput   = document.getElementById('latitude')
+    const lngInput   = document.getElementById('longitude')
+    const labelInput = document.getElementById('label')
+    const preview    = document.getElementById('payloadPreview')
+    const btnPublish = document.getElementById('btnPublish')
+    const statusMsg  = document.getElementById('statusMsg')
 
-    // ── File picker ──────────────────────────────────────────────
-    const fileDrop     = document.getElementById('fileDrop');
-    const fileInput    = document.getElementById('fileInput');
-    const btnUpload    = document.getElementById('btnUpload');
-    const statusMsg    = document.getElementById('statusMsg');
-    const progressWrap = document.getElementById('progressWrap');
-    const progressBar  = document.getElementById('progressBar');
+    // ── Live payload preview ─────────────────────────────────────
+    function updatePreview() {
+        const lat   = latInput.value.trim()
+        const lng   = lngInput.value.trim()
+        const label = labelInput.value.trim()
 
-    fileDrop.addEventListener('click', () => fileInput.click());
-
-    fileDrop.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        fileDrop.classList.add('dragover');
-    });
-
-    fileDrop.addEventListener('dragleave', () => {
-        fileDrop.classList.remove('dragover');
-    });
-
-    fileDrop.addEventListener('drop', (e) => {
-        e.preventDefault();
-        fileDrop.classList.remove('dragover');
-        const file = e.dataTransfer.files[0];
-        if (file) setFile(file);
-    });
-
-    fileInput.addEventListener('change', () => {
-        if (fileInput.files[0]) setFile(fileInput.files[0]);
-    });
-
-    function setFile(file) {
-        selectedFile = file;
-        document.getElementById('selectedFileName').textContent = `Selected: ${file.name}`;
-        btnUpload.disabled = false;
+        if (lat && lng) {
+            const payload = buildPayload(lat, lng, label)
+            preview.textContent = JSON.stringify(JSON.parse(payload), null, 2)
+        } else {
+            preview.textContent = 'Fill in coordinates to preview payload'
+        }
     }
 
-    // ── Upload & Publish ─────────────────────────────────────────
-    btnUpload.addEventListener('click', async () => {
-        if (!selectedFile) return;
+    latInput.addEventListener('input', updatePreview)
+    lngInput.addEventListener('input', updatePreview)
+    labelInput.addEventListener('input', updatePreview)
 
-        const supabaseUrl    = document.getElementById('supabaseUrl').value.trim();
-        const supabaseKey    = document.getElementById('supabaseKey').value.trim();
-        const supabaseBucket = document.getElementById('supabaseBucket').value.trim();
-        const mqttHost       = document.getElementById('mqttHost').value.trim();
-        const mqttUsername   = document.getElementById('mqttUsername').value.trim();
-        const mqttPassword   = document.getElementById('mqttPassword').value.trim();
-        const mqttTopic      = document.getElementById('mqttTopic').value.trim();
+    // ── Build payload ────────────────────────────────────────────
+    function buildPayload(lat, lng, label) {
+        const data = {
+            type      : "location",
+            latitude  : parseFloat(lat),
+            longitude : parseFloat(lng),
+            label     : label || "Location",
+            timestamp : new Date().toISOString()
+        }
+        return JSON.stringify(data)
+    }
 
-        if (!supabaseUrl || !supabaseKey || !mqttHost || !mqttTopic) {
-            setStatus('Please fill all fields', 'error');
-            return;
+    // ── Publish ──────────────────────────────────────────────────
+    btnPublish.addEventListener('click', async () => {
+        const mqttHost  = document.getElementById('mqttHost').value.trim()
+        const mqttTopic = document.getElementById('mqttTopic').value.trim()
+        const lat       = latInput.value.trim()
+        const lng       = lngInput.value.trim()
+        const label     = labelInput.value.trim()
+
+        if (!lat || !lng) {
+            setStatus('Please enter latitude and longitude', 'error')
+            return
         }
 
-        btnUpload.disabled = true;
-        progressWrap.style.display = 'block';
-        progressBar.value = 0;
-        setStatus('Uploading to Supabase...', 'info');
+        if (!mqttHost || !mqttTopic) {
+            setStatus('Please enter MQTT host and topic', 'error')
+            return
+        }
+
+        btnPublish.disabled = true
+        setStatus('Connecting to MQTT...', 'info')
 
         try {
-            // ── Step 1: Upload to Supabase ───────────────────────
-            const uploadUrl = `${supabaseUrl}/storage/v1/object/${supabaseBucket}/${selectedFile.name}`;
-            const response = await fetch(uploadUrl, {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${supabaseKey}`,
-                'Content-Type': selectedFile.type || 'application/octet-stream',
-                'x-upsert': 'true'        // ← add this — overwrites if exists
-              },
-              body: selectedFile
-           });
-
-            if (!response.ok) {
-              const errorText = await response.text();
-              throw new Error(`Upload failed: ${response.status} — ${errorText}`);
-            }
-
-            progressBar.value = 80;
-            setStatus('Upload done. Publishing to MQTT...', 'info');
-
-            // ── Step 2: Build public download URL ────────────────
-            const downloadUrl = `${supabaseUrl}/storage/v1/object/public/${supabaseBucket}/${selectedFile.name}`;
-
-            // ── Step 3: Publish URL to HiveMQ via WebSocket ──────
-            await publishToMqtt(mqttHost, mqttUsername, mqttPassword, mqttTopic, downloadUrl);
-
-            progressBar.value = 100;
-            setStatus(`✓ Upload Successful! URL published to topic: ${mqttTopic}`, 'success');
-            btnUpload.disabled = false;
-
+            const payload = buildPayload(lat, lng, label)
+            await publishToMqtt(mqttHost, mqttTopic, payload)
+            setStatus(`✓ Published successfully to topic: ${mqttTopic}`, 'success')
         } catch (err) {
-            setStatus(`Error: ${err.message}`, 'error');
-            btnUpload.disabled = false;
+            setStatus(`Error: ${err.message}`, 'error')
+        } finally {
+            btnPublish.disabled = false
         }
-    });
+    })
 
-    // ── MQTT Publish via WebSocket ───────────────────────────────
-    function publishToMqtt(host, username, password, topic, message) {
-        return new Promise((resolve, reject) => {
-            const clientId = 'portal-' + Math.random().toString(16).substr(2, 8);
-            const client   = mqtt.connect(`wss://${host}:8884/mqtt`, {
+    // ── MQTT Publish ─────────────────────────────────────────────
+    function publishToMqtt(host, topic, message) {
+       return new Promise((resolve, reject) => {
+        const clientId = 'portal-' + Math.random().toString(16).substr(2, 8)
+
+        // Try ports in order: 443 → 8884 → 8083
+        const client   = mqtt.connect(`wss://${host}:8884/mqtt`, {
             clientId,
             clean: true,
             connectTimeout: 10000
         });
 
+        // Timeout after 10 seconds
+        const timeout = setTimeout(() => {
+            client.end(true)
+            reject(new Error('Connection timeout — broker unreachable'))
+        }, 10000)
+
         client.on('connect', () => {
-            console.log('MQTT connected, publishing...');
+            clearTimeout(timeout)
+            console.log('MQTT connected on port 443')
             client.publish(topic, message, { qos: 1 }, (err) => {
-                if (err) {
-                    console.error('Publish error:', err);
-                    reject(err);
-                } else {
-                    console.log('Published:', message);
-                    resolve();
-                }
-                client.end();
-            });
-        });
+                client.end()
+                if (err) reject(err)
+                else resolve()
+            })
+        })
 
         client.on('error', (err) => {
-                console.error('MQTT error:', err);
-                client.end();
-                reject(err);
-            });
-        });
+            clearTimeout(timeout)
+            console.error('MQTT error:', err)
+            client.end()
+            reject(err)
+        })
+       })
     }
 
     function setStatus(msg, type) {
-        statusMsg.textContent = msg;
-        statusMsg.className   = type;
+        statusMsg.textContent = msg
+        statusMsg.className   = type
     }
 </script>
 </body>
